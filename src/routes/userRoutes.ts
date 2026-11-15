@@ -8,11 +8,13 @@ import {
     paginationQuerySchema 
 } from '../dto/user.dto';
 import { asyncHandler } from '../utils/asyncHandler';
+import { authMiddleware } from '../middleware/auth';
 
 export const userRoutes = Router();
 
 userRoutes.get(
     '/',
+    authMiddleware,
     validate(paginationQuerySchema, 'query'),
     asyncHandler(UserController.getAll)
 );

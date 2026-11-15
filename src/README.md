@@ -299,3 +299,286 @@ Lint and format: ESLint, Prettier, and Husky pre-commit hooks.
 Stronger rate limiting: stricter limits on auth routes, and Redis-backed limits when running multiple instances.
 Monitoring: error tracking (such as Sentry) and metrics.
 Soft deletes, audit fields, and caching where they make sense.
+
+
+
+
+MODULE 9: README.md
+
+# Professional Boilerplate API with JWT Authentication
+
+A production-style REST API built with **Node.js, Express, TypeScript, TypeORM, and MySQL**. This version adds **JWT (JSON Web Token) authentication**: users log in with email and password, receive a signed token, and must send that token to access protected routes.
+
+## Features
+
+- User CRUD operations
+- Login with bcrypt password verification
+- JWT generation and verification
+- Authentication middleware that protects routes
+- Request validation with Joi
+- Environment validation (the app refuses to start with a missing or weak `JWT_SECRET`)
+- Security middleware (Helmet, CORS, rate limiting)
+- Structured logging and centralized error handling
+
+## Tech Stack
+
+| Area | Technology |
+|------|------------|
+| Runtime / Language | Node.js, TypeScript |
+| Framework | Express |
+| Database / ORM | MySQL, TypeORM |
+| Auth | jsonwebtoken, bcrypt |
+| Validation | Joi |
+
+## Getting Started
+
+### Prerequisites
+
+- Node.js 18+
+- MySQL running locally with a `boilerplate_db` database
+- Postman or Insomnia for testing
+
+### Installation
+
+```bash
+git clone <your-repo-url>
+cd professional-boilerplate
+npm install
+```
+
+### Environment Variables
+
+Create a `.env` file in the project root:
+
+```env
+NODE_ENV=development
+PORT=3000
+
+# Database
+DB_HOST=localhost
+DB_PORT=3306
+DB_USERNAME=root
+DB_PASSWORD=your_mysql_password
+DB_DATABASE=boilerplate_db
+
+# Frontend URL for CORS
+FRONTEND_URL=http://localhost:4200
+
+# JWT Configuration
+JWT_SECRET=your-generated-secret-here
+JWT_EXPIRES_IN=24h
+```
+
+Generate a secure secret (minimum 32 characters is enforced):
+
+```bash
+node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
+```
+
+> Never commit your `.env` file. Make sure it is listed in `.gitignore`.
+
+### Run the Server
+
+```bash
+npm run dev
+```
+
+Expected output:
+
+```
+✅ Database connected successfully
+🚀 Server running on port 3000
+```
+
+## Project Structure
+
+```
+src/
+├── config/
+│   ├── data-source.ts      # TypeORM data source
+│   └── env.ts              # Joi-validated environment config (incl. JWT)
+├── controllers/
+│   └── authController.ts   # login, getMe
+├── dto/
+│   └── auth.dto.ts         # loginSchema (Joi)
+├── entities/
+│   └── User.ts
+├── middleware/
+│   └── auth.ts             # authMiddleware (JWT verification)
+├── routes/
+│   ├── authRoutes.ts       # /api/auth/*
+│   ├── userRoutes.ts
+│   └── healthRoutes.ts
+├── services/
+│   └── authService.ts      # login, verifyToken, getUserFromToken
+└── index.ts                # app setup and route registration
+```
+
+## Authentication Flow
+
+```
+ Client                                   Server
+   |                                        |
+   |  1. POST /api/auth/login               |
+   |     { email, password }                |
+   |--------------------------------------->|
+   |                                        |  2. Find user by email
+   |                                        |  3. bcrypt.compare(password, hash)
+   |                                        |  4. jwt.sign({ userId, email })
+   |  5. { token, user }                    |
+   |<---------------------------------------|
+   |                                        |
+   |  6. GET /api/users                     |
+   |     Authorization: Bearer <token>      |
+   |--------------------------------------->|
+   |                                        |  7. authMiddleware: verify token
+   |                                        |  8. Attach decoded payload to req.user
+   |  9. Protected data                     |
+   |<---------------------------------------|
+```
+
+1. The client sends credentials to the login endpoint.
+2. The server looks up the user and compares the password against the stored bcrypt hash.
+3. If valid, the server signs a JWT containing `userId` and `email`, expiring after `JWT_EXPIRES_IN`.
+4. The client stores the token and sends it in the `Authorization` header on later requests.
+5. `authMiddleware` verifies the signature and expiry, attaches the payload to `req.user`, and calls `next()`.
+6. If the token is missing, malformed, invalid, or expired, the request is rejected with `401 Unauthorized`.
+
+## How to Get a Token
+
+**Request**
+
+```http
+POST /api/auth/login
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "Password123"
+}
+```
+
+**Response**
+
+```json
+{
+  "success": true,
+  "message": "Login successful",
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "user": {
+      "id": 1,
+      "email": "test@example.com",
+      "name": "Test User"
+    }
+  }
+}
+```
+
+## How to Use the Token
+
+Send the token in the `Authorization` header using the `Bearer` scheme:
+
+```http
+GET /api/users
+Authorization: Bearer <your-token-here>
+```
+
+In Postman: **Authorization** tab → Type **Bearer Token** → paste the token.
+
+## API Endpoints
+
+### Public
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Health check |
+| POST | `/api/auth/login` | Log in and receive a JWT |
+| POST | `/api/users` | Create a user (registration)* |
+
+### Protected (require `Authorization: Bearer <token>`)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/auth/me` | Get the current user from the token |
+| GET | `/api/users` | List users (paginated) |
+| GET | `/api/users/:id` | Get a user by ID |
+| PUT / PATCH | `/api/users/:id` | Update a user |
+| DELETE | `/api/users/:id` | Delete a user |
+
+\* Adjust this table to match how you applied `authMiddleware` in `userRoutes.ts`.
+
+### Error Responses
+
+| Status | Code | When |
+|--------|------|------|
+| 400 | `VALIDATION_ERROR` | Invalid request body (e.g. bad email format) |
+| 401 | `UNAUTHORIZED` | Missing, invalid, or expired token; wrong credentials |
+
+Example:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "No token provided"
+  }
+}
+```
+
+## Testing Checklist
+
+| # | Test | Expected |
+|---|------|----------|
+| 1 | Login with valid credentials | 200, token returned |
+| 2 | `GET /api/users` with valid token | 200, user list |
+| 3 | `GET /api/users` without token | 401 "No token provided" |
+| 4 | `GET /api/users` with invalid token | 401 "Invalid token" |
+| 5 | `GET /api/auth/me` with valid token | 200, current user |
+| 6 | Login with wrong password | 401 "Invalid email or password" |
+| 7 | Login with invalid email format | 400 validation error |
+
+## Security Notes
+
+- Passwords are hashed with bcrypt and never returned in responses or stored in the token.
+- `JWT_SECRET` is validated at startup and must be at least 32 characters.
+- Login returns the same generic message for unknown emails and wrong passwords to avoid revealing which accounts exist.
+- Use HTTPS in production so tokens cannot be intercepted in transit.
+
+## Reflection Answers
+
+**1. What is the difference between authentication and authorization?**
+Authentication verifies *who you are*; authorization decides *what you are allowed to do*. Example: showing your ID and ticket at an airport check-in is authentication, while your boarding pass determining which gate and seat you can access is authorization. In this project, login is authentication, and deciding whether a user may delete other users would be authorization.
+
+**2. Why is JWT "stateless," and how does that help scalability?**
+The server does not store sessions. All the information needed to validate a request is inside the signed token, so any server instance can verify it using the shared secret, with no session lookup. This makes horizontal scaling simple because there is no shared session store to maintain.
+
+**3. What are the three parts of a JWT?**
+- **Header:** the token type and signing algorithm (e.g. HS256).
+- **Payload:** the claims, such as `userId`, `email`, `iat` (issued at), and `exp` (expiry).
+- **Signature:** a hash of the header and payload made with the secret, proving the token was not tampered with.
+
+**4. Why should you never put sensitive data in the JWT payload?**
+The payload is only Base64URL-encoded, not encrypted. Anyone who has the token can decode and read it (for example at jwt.io). Only non-sensitive identifiers belong there.
+
+**5. How does bcrypt protect passwords? What are salt and rounds?**
+bcrypt is a deliberately slow, one-way hashing function. The **salt** is random data added to each password before hashing, so identical passwords produce different hashes and precomputed rainbow tables are useless. The **rounds** (cost factor) set how much work each hash takes (2^rounds iterations), making brute-force attacks expensive, and the cost can be raised as hardware gets faster.
+
+**6. What happens if someone steals a JWT, and how can you mitigate it?**
+They can impersonate the user until the token expires, because the server cannot tell the difference. Mitigations: short expiry times, refresh tokens, HTTPS only, avoiding storage in places exposed to XSS (such as using httpOnly cookies), a token blacklist or revocation list for logout, and rotating the secret if it is compromised.
+
+**7. Why is HTTPS important when transmitting JWTs?**
+A JWT is a bearer token: whoever holds it has access. Over plain HTTP, it can be sniffed on the network. HTTPS encrypts the traffic so tokens and credentials cannot be read or replayed by an attacker in the middle.
+
+**8. Access token vs. refresh token?**
+An access token is short-lived (minutes to an hour) and sent with every API request, limiting damage if stolen. A refresh token is long-lived, stored more securely, and used only to obtain new access tokens, so users stay logged in without re-entering credentials. Use access tokens for API calls and refresh tokens for keeping sessions alive.
+
+**9. How does the auth middleware know which user is making the request?**
+It reads the `Authorization: Bearer <token>` header, verifies the signature and expiry with `jwt.verify`, and gets the `userId` and `email` from the decoded payload. It then attaches that payload to `req.user`, which controllers can use.
+
+**10. How would you add role-based authorization (admin vs. regular user)?**
+- Add a `role` column to the `User` entity (e.g. `'admin' | 'user'`, default `'user'`).
+- Include `role` in the JWT payload and in the `TokenPayload` / `req.user` types.
+- Create a `requireRole(...roles)` middleware that runs after `authMiddleware` and returns `403 Forbidden` if `req.user.role` is not allowed.
+- Apply it to routes, e.g. `router.delete('/:id', authMiddleware, requireRole('admin'), ...)`.
