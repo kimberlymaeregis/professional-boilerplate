@@ -582,3 +582,497 @@ It reads the `Authorization: Bearer <token>` header, verifies the signature and 
 - Include `role` in the JWT payload and in the `TokenPayload` / `req.user` types.
 - Create a `requireRole(...roles)` middleware that runs after `authMiddleware` and returns `403 Forbidden` if `req.user.role` is not allowed.
 - Apply it to routes, e.g. `router.delete('/:id', authMiddleware, requireRole('admin'), ...)`.
+
+
+ACTIVITY 10 README.md
+
+# Professional Boilerplate: Node.js + TypeScript + TypeORM + JWT
+
+A production-style REST API boilerplate built with **Express, TypeScript, TypeORM and MySQL**. It provides JWT authentication and, as of Lab 11, a complete **email verification** and **password reset** system powered by **Nodemailer**.
+
+This moves the API from "basic authentication" to an enterprise-style security flow: users must prove they own their email before logging in, and can securely recover forgotten passwords through one-time, expiring tokens.
+
+---
+
+## Features
+
+- JWT login with protected routes
+- User registration with **email verification** (24-hour token)
+- **Forgot / reset password** flow (1-hour token)
+- Resend verification email
+- Login blocked until the email is verified
+- Cryptographically secure tokens (`crypto.randomBytes`)
+- One-time-use tokens that are cleared after use
+- No information leakage (email enumeration protection)
+- Joi request validation with custom error messages
+- HTML email templates, tested with Ethereal (no real emails sent)
+- TypeORM migrations for schema management
+- Centralized logging and error handling
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Runtime | Node.js, TypeScript |
+| Framework | Express |
+| Database | MySQL + TypeORM |
+| Auth | JWT, bcrypt |
+| Email | Nodemailer (Ethereal for testing) |
+| Validation | Joi |
+
+---
+
+## Project Structure
+
+```
+src/
+├── config/
+│   ├── data-source.ts          # TypeORM DataSource
+│   └── env.ts                  # Env validation (Joi) + config object
+├── controllers/
+│   ├── authController.ts
+│   └── verificationController.ts
+├── dto/
+│   ├── auth.dto.ts
+│   └── verification.dto.ts     # register, email, resetPassword schemas
+├── entities/
+│   └── User.ts                 # User entity with token fields
+├── middleware/
+│   ├── auth.ts                 # JWT middleware
+│   └── validate.ts             # Joi validation middleware
+├── migrations/                 # TypeORM migrations
+├── routes/
+│   ├── authRoutes.ts           # /login, /me + mounts verification routes
+│   └── verificationRoutes.ts   # register, verify, resend, forgot, reset
+├── services/
+│   ├── authService.ts          # Login (checks isVerified)
+│   ├── emailService.ts         # Nodemailer + HTML templates
+│   └── verificationService.ts  # Verification and reset business logic
+└── utils/                      # logger, errors, response, asyncHandler
+```
+
+---
+
+## Getting Started
+
+### 1. Prerequisites
+
+- Node.js 18+
+- MySQL running with a `boilerplate_db` database
+
+### 2. Install
+
+```bash
+npm install
+```
+
+### 3. Configure `.env`
+
+```env
+# Database, JWT and app settings (existing)
+# ...
+
+# Email configuration (Ethereal for testing)
+SMTP_HOST=smtp.ethereal.email
+SMTP_PORT=587
+SMTP_USER=your-ethereal-username@ethereal.email
+SMTP_PASS=your-ethereal-password
+EMAIL_FROM=noreply@yourapp.com
+```
+
+### 4. Generate Ethereal test credentials
+
+```bash
+node -e "const nodemailer = require('nodemailer'); nodemailer.createTestAccount().then(a => { console.log('User:', a.user); console.log('Pass:', a.pass); console.log('Host:', a.smtp.host); console.log('Port:', a.smtp.port); })"
+```
+
+Copy the output into the `SMTP_*` values above.
+
+### 5. Run migrations
+
+```bash
+# Generate a new migration (TypeORM 0.3+ takes the path as an argument)
+npm run migration:generate -- src/migrations/AddEmailVerificationFields
+
+# Apply migrations
+npm run migration:run
+```
+
+Mark any pre-existing users as verified so they can still log in:
+
+```sql
+UPDATE users SET isVerified = true WHERE isVerified = false;
+```
+
+### 6. Start the server
+
+```bash
+npm run dev
+```
+
+Expected output:
+
+```
+✅ Database connected successfully
+✅ Email service connected
+🚀 Server running on port 3000
+```
+
+---
+
+## Database Schema (users)
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | INT | Primary key, auto increment |
+| name | VARCHAR(100) | |
+| email | VARCHAR(100) | Unique |
+| password | VARCHAR(255) | bcrypt hash, `select: false` |
+| isActive | TINYINT | Default 1 |
+| **isVerified** | TINYINT | Default 0 |
+| **verificationToken** | VARCHAR(255) | Nullable, unique, `select: false` |
+| **verificationTokenExpiry** | DATETIME | Nullable |
+| **resetPasswordToken** | VARCHAR(255) | Nullable, unique, `select: false` |
+| **resetPasswordExpiry** | DATETIME | Nullable |
+| age | INT | Nullable |
+| createdAt / updatedAt | DATETIME(6) | Automatic |
+
+Unique indexes exist on `email`, `verificationToken` and `resetPasswordToken`.
+
+---
+
+## Authentication Flow
+
+### Registration and verification
+
+```
+Client                    API                         Email (Ethereal)
+  | POST /register         |                                |
+  |----------------------->| hash password                  |
+  |                        | create token (24h expiry)      |
+  |                        | save user (isVerified=false)   |
+  |                        |------------------------------->| verification email
+  |<-----------------------| 201 Registration successful    |
+  |                        |                                |
+  | POST /login            |                                |
+  |----------------------->| isVerified = false             |
+  |<-----------------------| 401 Please verify your email   |
+  |                        |                                |
+  | GET /verify-email?token|                                |
+  |----------------------->| valid + not expired            |
+  |                        | isVerified=true, clear token   |
+  |<-----------------------| 200 Email verified             |
+  |                        |                                |
+  | POST /login            |                                |
+  |----------------------->|                                |
+  |<-----------------------| 200 JWT token                  |
+```
+
+### Password reset
+
+```
+1. POST /forgot-password   -> generates reset token (1h expiry), emails link
+                              (always returns the same success message)
+2. User opens email link   -> frontend reads ?token=...
+3. POST /reset-password    -> validates token + expiry, hashes new password,
+                              clears the token
+4. POST /login             -> works with the new password
+```
+
+---
+
+## API Endpoints
+
+Base URL: `http://localhost:3000/api/auth`
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| POST | `/register` | No | Register and send verification email |
+| GET | `/verify-email?token=...` | No | Verify email with token |
+| POST | `/resend-verification` | No | Send a new verification email |
+| POST | `/forgot-password` | No | Request a password reset email |
+| POST | `/reset-password` | No | Reset password with token |
+| POST | `/login` | No | Login (verified users only) |
+| GET | `/me` | JWT | Get the current user |
+
+### POST `/register`
+
+```json
+{
+  "name": "John Doe",
+  "email": "john.doe@example.com",
+  "password": "Password123",
+  "age": 30
+}
+```
+
+Response `201`:
+
+```json
+{
+  "success": true,
+  "message": "Registration successful. Please check your email to verify your account.",
+  "data": {
+    "message": "Registration successful. Please check your email to verify your account.",
+    "userId": 3
+  }
+}
+```
+
+### GET `/verify-email?token=YOUR_TOKEN`
+
+Response `200`:
+
+```json
+{
+  "success": true,
+  "message": "Email verified successfully. You can now log in."
+}
+```
+
+### POST `/resend-verification`
+
+```json
+{ "email": "john.doe@example.com" }
+```
+
+Response `200`:
+
+```json
+{
+  "success": true,
+  "message": "If an account with that email exists, a verification email has been sent."
+}
+```
+
+### POST `/login`
+
+```json
+{
+  "email": "john.doe@example.com",
+  "password": "Password123"
+}
+```
+
+Success `200`:
+
+```json
+{
+  "success": true,
+  "message": "Login successful",
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "user": { "id": 3, "email": "john.doe@example.com", "name": "John Doe" }
+  }
+}
+```
+
+Unverified `401`:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Please verify your email address before logging in. Check your inbox for the verification link."
+  }
+}
+```
+
+### POST `/forgot-password`
+
+```json
+{ "email": "john.doe@example.com" }
+```
+
+Response `200` (same message whether or not the email exists):
+
+```json
+{
+  "success": true,
+  "message": "If an account with that email exists, a reset link has been sent."
+}
+```
+
+### POST `/reset-password`
+
+Send **only the token value** (the part after `?token=`), not the whole link.
+
+```json
+{
+  "token": "YOUR_RESET_TOKEN_HERE",
+  "newPassword": "NewPassword456"
+}
+```
+
+Response `200`:
+
+```json
+{
+  "success": true,
+  "message": "Password reset successfully. You can now log in with your new password."
+}
+```
+
+### Validation rules
+
+- **name**: 2 to 100 characters
+- **email**: valid email format
+- **password / newPassword**: 8 to 50 characters, at least one letter and one number
+- **age**: integer between 13 and 120 (optional)
+
+---
+
+## How to Test Emails with Ethereal
+
+[Ethereal](https://ethereal.email) is a fake SMTP service. Emails are never delivered to real inboxes. Instead you view them in the browser.
+
+1. Start the server with `npm run dev`.
+2. Trigger an email (register or forgot-password).
+3. Find the log line in your terminal:
+   ```
+   📧 Ethereal preview URL { previewUrl: 'https://ethereal.email/message/...' }
+   ```
+4. Open that URL to see the email.
+5. Copy the token from the link (`...?token=THIS_PART`).
+6. Send it to the API:
+   - Verification: `GET /api/auth/verify-email?token=THIS_PART`
+   - Reset: `POST /api/auth/reset-password` with `{ "token": "THIS_PART", "newPassword": "..." }`
+
+The email links point to the frontend (`http://localhost:4200/...`). When testing with Postman or Insomnia, skip the frontend, extract the token, and call the API on port **3000** directly.
+
+---
+
+## Test Results
+
+| # | Test | Expected | Result |
+|---|------|----------|--------|
+| 1 | Register new user | 201, verification email sent | ✅ |
+| 2 | Login before verification | 401 Unauthorized | ✅ |
+| 3 | Verify email | 200, `isVerified = true` | ✅ |
+| 4 | Login after verification | 200 + JWT | ✅ |
+| 5 | Request password reset | 200, reset email sent | ✅ |
+| 6 | Reset password | 200 | ✅ |
+| 7 | Login with new password | 200 + JWT | ✅ |
+| 8a | Forgot password, unknown email | 200 (no leakage) | ✅ |
+| 8b | Reuse verification token | 400 Invalid verification token | ✅ |
+| 8c | Reuse reset token | 400 Invalid reset token | ✅ |
+| 8d | Register duplicate email | 409 Email already registered | ✅ |
+
+---
+
+## Security Features
+
+- **Cryptographically secure tokens**: `crypto.randomBytes(32)` gives 256 bits of entropy (64 hex characters).
+- **Token expiration**: verification tokens last 24 hours, reset tokens last 1 hour.
+- **One-time use**: tokens and expiry values are set to `null` after use.
+- **No email enumeration**: forgot-password and resend-verification return the same message whether or not the account exists.
+- **Verified-only login**: unverified accounts cannot get a JWT.
+- **Unverified accounts cannot reset passwords**: the request is silently ignored.
+- **Password hashing**: bcrypt with 10 salt rounds.
+- **Sensitive columns hidden**: `password`, `verificationToken` and `resetPasswordToken` use `select: false`, so they are not returned by default queries.
+- **Input validation**: all new endpoints are validated with Joi.
+- **Unique indexes**: prevent duplicate tokens and duplicate emails.
+- **Non-blocking email failures**: if sending fails, the user is still created and can request a resend.
+
+---
+
+## Troubleshooting
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| `Email service connection failed` | Wrong SMTP credentials | Check the `SMTP_*` values in `.env` |
+| `Cannot find module 'nodemailer'` | Package missing | `npm install nodemailer` |
+| `Not enough non-option arguments` on `migration:generate` | TypeORM 0.3+ removed `-n` | Use `npm run migration:generate -- src/migrations/Name` |
+| `Table 'users' already exists` on migration run | Duplicate `InitialSchema` migration file | Delete the duplicate file, then run again |
+| `Column 'isVerified' doesn't exist` | Migration not run | `npm run migration:run` |
+| `ROUTE_NOT_FOUND` with `auth//forgot-password` | Double slash in URL | Use `/api/auth/forgot-password` |
+| `Invalid verification token` | Token expired or already used | Use `/resend-verification` |
+| `Reset token has expired` | More than 1 hour passed | Request a new reset email |
+| `Email already registered` | Email exists in the DB | Use a different email or delete the user |
+
+---
+
+## Reflection Questions
+
+### 1. Why is email verification important for security? What problems does it prevent?
+
+Email verification proves that the person registering actually controls the address they typed. Without it, anyone can register using someone else's email, which enables impersonation, spam sign-ups and fake or bot accounts. It also prevents a stranger from claiming an address and later locking out the real owner, and it protects the password reset flow, since reset links are only trustworthy if the email on file is confirmed to belong to the user. It also keeps the database clean and gives the app a reliable channel for contacting users.
+
+### 2. Explain the "always return success" pattern in forgot password. Why is it a security best practice?
+
+The endpoint returns the same message ("If an account with that email exists, a reset link has been sent.") whether or not the email is registered. If it returned "email not found" for unknown addresses, an attacker could use the endpoint as an oracle to discover which emails have accounts. The identical response means the attacker learns nothing, while real users still receive their email. The real outcome is logged on the server only.
+
+### 3. What's the difference between a verification token and a reset token? Why do they have different expiration times?
+
+A verification token proves ownership of an email address at sign-up and only unlocks the ability to log in. A reset token lets someone **change the password**, which gives full control of the account. Because the reset token is far more powerful, it expires after **1 hour**, limiting the window for an attacker who gets access to an inbox, link or log. The verification token is lower risk and users may not check their email immediately after registering, so it lasts **24 hours** for convenience. They are also stored in separate columns so one can never be used for the other's purpose.
+
+### 4. Why do we use `crypto.randomBytes(32)` instead of `Math.random()` or `Date.now()` for token generation?
+
+`Math.random()` is a pseudo-random generator that is not cryptographically secure. Its output can be predicted if an attacker observes a few values. `Date.now()` is just a timestamp, so an attacker can guess it within a small range. `crypto.randomBytes(32)` draws from the operating system's cryptographically secure random source and gives 256 bits of entropy, which makes guessing a valid token computationally infeasible.
+
+### 5. What happens if a user never verifies their email? How does your system handle this?
+
+The account stays in the database with `isVerified = false`. They cannot log in, since the login service rejects unverified users with a 401 and a message telling them to check their inbox. Their token expires after 24 hours, but they can call `/resend-verification` to get a fresh token and email. They also cannot use forgot-password, because unverified accounts are ignored. A possible improvement is a scheduled job that deletes accounts that remain unverified after several days.
+
+### 6. Explain why tokens are cleared after use. What security risk does this prevent?
+
+Clearing makes tokens one-time use. If a token stayed valid after use, anyone who later obtained it (from browser history, an old email, server logs or a forwarded message) could replay it. For password reset, this could let an attacker change the password again after the real user already used the link. Setting the token and expiry to `null` means a reused token fails with "Invalid token", which is what tests 8b and 8c confirm.
+
+### 7. What is email enumeration and how does your implementation prevent it?
+
+Email enumeration is when an attacker figures out which email addresses have accounts by observing differences in the API's behavior, such as different messages, status codes or response times. The attacker can then target those users with phishing, credential stuffing or spam. My implementation prevents it by returning identical success messages in `forgotPassword` and `resendVerification` for existing, non-existent and unverified accounts, and by logging the real outcome server-side only. A remaining weakness is that `/register` returns 409 for duplicate emails, which does reveal that an email exists. A stricter design would send "you already have an account" emails instead. Response timing could also be equalized.
+
+### 8. If you had to implement two-factor authentication (2FA) on top of this system, how would you approach it?
+
+I would add TOTP-based 2FA (Google Authenticator or Authy style):
+
+1. Add `twoFactorSecret` (encrypted) and `twoFactorEnabled` columns to `users`.
+2. Add a setup endpoint that generates a secret with a library like `speakeasy` or `otplib` and returns a QR code. The user confirms by entering a valid code before 2FA is enabled.
+3. Change login into two steps: after a correct password, return a short-lived temporary token (not a full JWT) with `requires2FA: true`.
+4. Add a `/login/2fa` endpoint that checks the 6-digit code and only then issues the real JWT.
+5. Generate one-time hashed backup codes for lost devices.
+6. Rate limit attempts to prevent brute-forcing the code.
+
+Email or SMS codes are alternatives, but TOTP is more secure than SMS.
+
+### 9. What are the trade-offs between using Ethereal (test service) vs. SendGrid (production service)?
+
+| | Ethereal | SendGrid |
+|---|----------|----------|
+| Cost | Free | Free tier, then paid |
+| Setup | No signup, instant credentials | Account, API key, domain verification |
+| Delivery | Never reaches real inboxes (safe for testing) | Real delivery to real users |
+| Deliverability | None | SPF/DKIM, reputation management, analytics |
+| Scale and reliability | Not meant for load | High volume, bounce and complaint handling |
+| Risk | No risk of emailing real people | Misconfigured tests could email real users |
+
+Ethereal is ideal for development and automated tests, while SendGrid (or similar) is required in production. Only the `.env` values need to change because Nodemailer uses standard SMTP.
+
+### 10. How would you handle a situation where a user's email provider marks your emails as spam?
+
+- Set up **SPF, DKIM and DMARC** on the sending domain, and send from a domain I own rather than a generic address.
+- Use a reputable provider (SendGrid, Postmark, SES) with dedicated or well-warmed IPs.
+- Keep email content clean: a clear subject, a plain-text alternative, no spammy wording, and a recognizable sender name.
+- Show a "Didn't get the email? Check your spam folder" message in the frontend and keep the **resend** option available.
+- Monitor bounce and complaint rates, and tell users to add the sender to their contacts.
+- Offer an alternative path, such as a code entered in the app, or support contact.
+
+---
+
+## Scripts
+
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Start the dev server |
+| `npm run migration:generate -- src/migrations/Name` | Generate a migration |
+| `npm run migration:run` | Run pending migrations |
+| `npm run migration:revert` | Revert the last migration |
+
+---
+
+## What's Next
+
+The next module builds an **Angular 21 frontend** with login and registration forms, an email verification page, forgot/reset password flows, HTTP interceptors that attach the JWT, and route guards to protect authenticated pages.

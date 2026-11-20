@@ -7,6 +7,7 @@ import { config } from '../config/env';
 import { createLogger } from '../utils/logger';
 
 
+
 const logger = createLogger('AuthService');
 const userRepository = AppDataSource.getRepository(User);
 
@@ -50,6 +51,7 @@ export class AuthService {
                name: true,
                password: true,
                isActive: true,
+               isVerified: true,    
            },
        });
 
@@ -58,6 +60,14 @@ export class AuthService {
            logger.warn('Login attempt with non-existent email', { email });
            throw new UnauthorizedError('Invalid email or password');
        }
+
+       // CHECK IF EMAIL IS VERIFIED
+       if (!user.isVerified) {
+         logger.warn('Login attempt for unverified account', { email });
+         throw new UnauthorizedError(
+       'Please verify your email address before logging in. Check your inbox for the verification link.'
+   );
+}
 
 
        // 2. Check if user is active
